@@ -1,0 +1,538 @@
+#include <ESP8266WiFi.h>
+#include <WiFiClient.h>
+#include <ESP8266WebServer.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266mDNS.h>
+#include <ArduinoJson.h>
+
+#ifndef STASSID
+#define STASSID "WIFI"
+#define STAPSK  "WIFI"
+#define URLCOLLECTOR  "Collect what happens"
+
+#endif
+
+const char* ssid     = STASSID;
+const char* password = STAPSK;
+const char* urlCollector = URLCOLLECTOR;
+
+ESP8266WebServer server(80);
+
+#include <DHT.h>
+#include <Wire.h>
+#include <DallasTemperature.h>
+
+long paramStartIn[16] = {0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L};
+long paramOn[16] = {0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L};
+long paramLastOn[16] = {0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L};
+long paramOff[16] = {0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L};
+long paramInterval[16] = {0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L};
+long paramStartedAt[16] = {0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L};
+bool relayCurrentStatus[16] = {false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false};
+
+String listType[16] = {"UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN", "UNDEFIN"};
+
+const String postForms = "<html>\
+  <head>\
+    <title>ESP8266 Web Server POST handling</title>\
+    <style>\
+      body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+    </style>\
+  </head>\
+  <body>\
+    <h1>POST plain text to /postplain/</h1><br>\
+    <form method=\"post\" enctype=\"text/plain\" action=\"/postplain/\">\
+      <input type=\"text\" name=\'{\"hello\": \"world\", \"trash\": \"\' value=\'\"}\'><br>\
+      <input type=\"submit\" value=\"Submit\">\
+    </form>\
+    <h1>POST form data to /postform/</h1><br>\
+    <form method=\"post\" enctype=\"application/x-www-form-urlencoded\" action=\"/postform/\">\
+      <input type=\"text\" name=\"hello\" value=\"world\"><br>\
+      <input type=\"submit\" value=\"Submit\">\
+    </form>\
+  </body>\
+</html>";
+
+void handleRoot() {
+  server.send(200, "text/html", postForms);
+}
+
+void saveMeasure(int paramPin, bool relayPosition = false){
+  
+  StaticJsonDocument<200> doc;
+  JsonArray values = doc.to<JsonArray>();
+  
+  
+  // MEASURE
+  if (listType[paramPin].equals("DHT21  ")) {
+      DHT dht(paramPin, DHT21);
+      dht.begin();
+      
+      JsonObject temp = values.createNestedObject();
+      temp["mac"] = WiFi.macAddress();
+      temp["pin"] = paramPin;
+      temp["sensor"] = "temperature";
+      temp["serie"] = dht.readTemperature();
+      
+      JsonObject hum = values.createNestedObject();
+      hum["mac"] = WiFi.macAddress();
+      hum["pin"] = paramPin;
+      hum["sensor"] = "humidity";
+      hum["serie"] = dht.readHumidity();
+      
+    } else if (listType[paramPin].equals("DS18B20")) {
+      
+      // DallasTemperature code
+      OneWire oneWire(paramPin); // Setup a oneWire instance to communicate with any OneWire devices  
+      DallasTemperature sensors(&oneWire); // Pass our oneWire reference to Dallas Temperature.
+       
+      delay(1000);
+      
+      //int sensorTempValue = analogRead(D1);  //*100/1024;
+      sensors.requestTemperatures(); // Send the command to get temperature readings
+      
+       //for (byte i = 0; i < paramNumber; i = i + 1) {
+        JsonObject temp = values.createNestedObject();
+        temp["mac"] = WiFi.macAddress();
+        temp["pin"] = paramPin;
+        temp["sensor"] = "temperature";
+        temp["serie"] = sensors.getTempCByIndex(0);
+       //}       
+      
+    } else if (listType[paramPin].equals("RELAY  ")) {
+      const int positionToPush = relayPosition ? 1 : 0;
+
+      JsonObject temp = values.createNestedObject();
+      temp["mac"] = WiFi.macAddress();
+      temp["pin"] = paramPin;
+      temp["sensor"] = "relay";
+      temp["serie"] = positionToPush;
+      
+    }
+
+  //serializeJsonPretty(values, Serial);
+
+  // SAVE on WEBSERVICE
+  String myOutput;
+  serializeJson(values, myOutput);
+
+    
+  HTTPClient http;  //Declare an object of class HTTPClient
+  
+  http.begin(urlCollector); 
+  http.addHeader("Content-Type", "application/json");  //Specify content-type header
+ Serial.print("request: {");
+ Serial.print(myOutput);
+ Serial.println("}");
+ 
+ int httpCode = http.POST(String(myOutput));   //Send the request
+ String payload = http.getString();                  //Get the response payload
+ Serial.print("result code:");
+ Serial.println(httpCode);   //Print HTTP return code
+ Serial.println(payload);    //Print request response payload
+ 
+ http.end();  //Close connection
+
+}
+void test() {
+
+  StaticJsonDocument<200> doc;
+  //JsonObject root = doc.to<JsonObject>();
+  JsonArray root = doc.to<JsonArray>();
+      
+    /*JsonObject newNode0 = root.createNestedObject();
+      newNode0["pin"] = 0;
+      newNode0["type"] = listType[0];
+      newNode0["paramOn"] = paramOn[0];
+      newNode0["paramOff"] = paramOff[0];
+      newNode0["paramLastOn"] = paramLastOn[0];
+      newNode0["paramInterval"] = paramInterval[0];
+      newNode0["paramStartIn"] = paramStartIn[0];
+      newNode0["paramStartedAt"] = paramStartedAt[0];
+      newNode0["relayCurrentStatus"] = relayCurrentStatus[0];
+      newNode0["millis"] = millis();
+      
+   JsonObject newNode1 = root.createNestedObject();
+      newNode1["pin"] = 1;
+      newNode1["type"] = listType[1];
+      newNode1["paramOn"] = paramOn[1];
+      newNode1["paramOff"] = paramOff[1];
+      newNode1["paramLastOn"] = paramLastOn[1];
+      newNode1["paramInterval"] = paramInterval[1];
+      newNode1["paramStartIn"] = paramStartIn[1];
+      newNode1["paramStartedAt"] = paramStartedAt[1];
+      newNode1["relayCurrentStatus"] = relayCurrentStatus[1];
+      newNode1["millis"] = millis();
+      
+    JsonObject newNode2 = root.createNestedObject();
+      newNode2["pin"] = 2;
+      newNode2["type"] = listType[2];
+      newNode2["paramOn"] = paramOn[2];
+      newNode2["paramOff"] = paramOff[2];
+      newNode2["paramLastOn"] = paramLastOn[2];
+      newNode2["paramInterval"] = paramInterval[2];
+      newNode2["paramStartIn"] = paramStartIn[2];
+      newNode2["paramStartedAt"] = paramStartedAt[2];
+      newNode2["relayCurrentStatus"] = relayCurrentStatus[2];
+      newNode2["millis"] = millis();
+    JsonObject newNode3 = root.createNestedObject();
+      newNode3["pin"] = 3;
+      newNode3["type"] = listType[3];
+      newNode3["paramOn"] = paramOn[3];
+      newNode3["paramOff"] = paramOff[3];
+      newNode3["paramLastOn"] = paramLastOn[3];
+      newNode3["paramInterval"] = paramInterval[3];
+      newNode3["paramStartIn"] = paramStartIn[3];
+      newNode3["paramStartedAt"] = paramStartedAt[3];
+      newNode3["relayCurrentStatus"] = relayCurrentStatus[3];
+      newNode3["millis"] = millis();
+      JsonObject newNode4 = root.createNestedObject();
+      newNode4["pin"] = 4;
+      newNode4["type"] = listType[4];
+      newNode4["paramOn"] = paramOn[4];
+      newNode4["paramOff"] = paramOff[4];
+      newNode4["paramLastOn"] = paramLastOn[4];
+      newNode4["paramInterval"] = paramInterval[4];
+      newNode4["paramStartIn"] = paramStartIn[4];
+      newNode4["paramStartedAt"] = paramStartedAt[4];
+      newNode4["relayCurrentStatus"] = relayCurrentStatus[4];
+      newNode4["millis"] = millis();*/
+      
+      JsonObject newNode5 = root.createNestedObject();
+      newNode5["pin"] = 5;
+      newNode5["mac"] = WiFi.macAddress();
+      newNode5["type"] = listType[5];
+      newNode5["paramOn"] = paramOn[5];
+      newNode5["paramOff"] = paramOff[5];
+      newNode5["paramLastOn"] = paramLastOn[5];
+      newNode5["paramInterval"] = paramInterval[5];
+      newNode5["paramStartIn"] = paramStartIn[5];
+      newNode5["paramStartedAt"] = paramStartedAt[5];
+      newNode5["relayCurrentStatus"] = relayCurrentStatus[5];
+      newNode5["millis"] = long(millis()/1000);
+      
+   
+   String myOutput;
+   serializeJson(root, myOutput);
+   server.send(200, "text/plain", myOutput);
+
+
+}
+void configure() {
+ 
+ if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "{error:Method Not Allowed}");
+  } else {
+    
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    
+    if (error) {
+      Serial.println(error.c_str());
+      server.send(400, "text/plain", "[HTTP] JSON error: ");
+    }
+    
+    JsonObject root = doc.as<JsonObject>();
+    String paramType = root["type"].as<String>();
+    int paramPin = root["pin"].as<int>();
+    unsigned long lngOn = root["on"].as<unsigned long>();
+    unsigned long lngOff = root["off"].as<unsigned long>();
+    unsigned long lngInterval = root["interval"].as<unsigned long>();
+    unsigned long lngStartIn= root["startin"].as<unsigned long>();
+    int paramNumber= root["number"].as<int>();
+    Serial.print(paramPin);
+    Serial.print(paramType);
+    Serial.print(lngInterval);
+    
+    
+    if (paramType.equals("RELAY  ")) {
+      resetParameters(paramPin);      
+      listType[paramPin] = paramType;
+      
+      pinMode(paramPin, OUTPUT);
+      paramOn[paramPin] = lngOn;
+      paramOff[paramPin] = lngOff;
+      paramInterval[paramPin] = lngInterval;
+      paramStartIn[paramPin] = lngStartIn;
+      paramStartedAt[paramPin] = millis()/1000;
+      if (lngStartIn == 0) {
+        digitalWrite(paramPin, LOW);
+        relayCurrentStatus[paramPin] = false;
+        saveMeasure(paramPin, true);
+        paramLastOn[paramPin] = millis()/1000;
+      } else {
+        digitalWrite(paramPin, HIGH);
+        relayCurrentStatus[paramPin] = true;
+        saveMeasure(paramPin, false);
+      }
+      Serial.print("timer will start in: ");
+      Serial.println(paramStartIn[paramPin]);
+      
+    }
+    if (paramType.equals("high")) {
+      pinMode(paramPin, OUTPUT);
+      digitalWrite(paramPin, LOW);
+    }
+    if (paramType.equals("low")) {
+      pinMode(paramPin, OUTPUT);
+      digitalWrite(paramPin, HIGH);
+    }
+    if (paramType.equals("DHT21  ") || paramType.equals("DS18B20") ) {
+
+      resetParameters(paramPin);      
+      listType[paramPin] = paramType;
+      paramInterval[paramPin] = lngInterval;
+
+    }
+
+
+    String myOutput;
+    serializeJson(doc, myOutput);
+    //server.send(200, "text/plain", "POST body was:\n" + server.arg("plain"));
+    server.send(200, "text/plain", myOutput);
+    
+  }
+}
+
+
+void resetParameters(int paramPin){
+  paramOn[paramPin] = 0;
+  paramOff[paramPin] = 0;
+  paramInterval[paramPin] = 0;
+  paramStartIn[paramPin] = 0;
+  paramStartedAt[paramPin] = 0;
+  paramLastOn[paramPin] = 0;
+  listType[paramPin] = "UNDEFIN";
+}
+
+void measure() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "{error:Method Not Allowed}");
+  } else {
+    
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    
+    if (error) {
+      Serial.println(error.c_str());
+      server.send(400, "text/plain", "[HTTP] JSON error: ");
+    }
+    
+    JsonObject root = doc.as<JsonObject>();
+    String paramType = root["type"].as<String>();
+    int paramPin = root["pin"].as<int>();
+    unsigned long paramOn = root["on"].as<unsigned long>();
+    unsigned long paramOff = root["off"].as<unsigned long>();
+    unsigned long paramInterval = root["interval"].as<unsigned long>();
+    unsigned long paramStartIn= root["startin"].as<unsigned long>();
+    int paramNumber= root["number"].as<int>();
+
+    Serial.println(paramStartIn);
+    
+    String myOutput;
+    
+    if (paramType.equals("DHT21  ")) {
+      DHT dht(paramPin, DHT21);
+      dht.begin();
+      //delay(2000);
+      
+      // Reading temperature or humidity takes about 250 milliseconds!
+      // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+
+      // Read temperature as Celsius (the default)
+      doc["temperature"] = dht.readTemperature();
+      doc["humidity"] = dht.readHumidity();
+      
+      serializeJson(doc, myOutput);
+      server.send(200, "text/plain", myOutput);
+      
+    } else if (paramType.equals("DS18B20")) {
+      // JSON code
+      JsonArray data = doc.createNestedArray("data"); // Create an array node on json
+      
+      // DallasTemperature code
+      OneWire oneWire(paramPin); // Setup a oneWire instance to communicate with any OneWire devices  
+      DallasTemperature sensors(&oneWire); // Pass our oneWire reference to Dallas Temperature.
+       
+      delay(1000);
+      
+      //int sensorTempValue = analogRead(D1);  //*100/1024;
+      sensors.requestTemperatures(); // Send the command to get temperature readings
+      
+       for (byte i = 0; i < paramNumber; i = i + 1) {
+        data.add(sensors.getTempCByIndex(i));
+       }       
+      
+    } else if (paramType.equals("RELAY  ")) {
+      
+      pinMode(paramPin, OUTPUT);
+      digitalWrite(paramPin, HIGH);
+      delay(1000);
+      digitalWrite(paramPin, LOW);
+      
+    }
+
+
+    serializeJson(doc, myOutput);
+    server.send(200, "text/plain", myOutput);
+    
+  }
+}
+
+void handleForm() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+  } else {
+    
+    String message = "POST form was:\n";
+    for (uint8_t i = 0; i < server.args(); i++) {
+      message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+    }
+    server.send(200, "text/plain", message);
+    
+  }
+}
+
+void handleNotFound() {
+  Serial.println("NOT FOUND");
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i = 0; i < server.args(); i++) {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  }
+  server.send(404, "text/plain", message);
+}
+
+
+void testWifi(){
+  
+
+  if (WiFi.status() != WL_CONNECTED) {
+    
+      Serial.println("");
+      WiFi.begin(ssid, password);
+      // Wait for connection
+      while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+      }
+      Serial.println("");
+      Serial.print("Connected to ");
+      Serial.println(ssid);
+      Serial.print("IP address: ");
+      Serial.println(WiFi.localIP());
+    
+      if (MDNS.begin("esp8266")) {
+        Serial.println("MDNS responder started");
+      }
+      
+   }
+
+   
+}
+
+
+void setup(void) {
+  Serial.begin(115200);
+  delay(20);
+  
+  testWifi();
+
+  server.on("/", handleRoot);
+
+// method used to configure the device
+  server.on("/configure/", configure);
+
+  server.on("/measure/", measure);
+
+// method used to test if the webservice is up - returns ALWAYS OK
+  server.on("/test/", test);
+
+  server.onNotFound(handleNotFound);
+
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+void loop(void) {
+  delay(500);
+
+  /* check wifi connection */
+  testWifi();
+
+  /* post server thing */
+  server.handleClient();
+
+  /* for all pin, check/apply the configuration */
+  for (byte i = 0; i < 16; i = i + 1) {
+
+    /*  Interval case */
+    if ( paramInterval[i] != 0 ) {
+      Serial.print("Interval case: ");
+      if (paramLastOn[i] == 0) {
+        saveMeasure(i);
+        paramLastOn[i] = millis()/1000;
+      } else if( millis()/1000 - paramLastOn[i] >=  paramInterval[i] ) {
+         saveMeasure(i);
+         paramLastOn[i] = millis()/1000;
+      }
+      
+    } 
+    else if (listType[i].equals("RELAY  ") ) {
+
+      
+      /* RELAY has already started */
+      if ( paramLastOn[i] != 0 ) {
+        
+          if (paramOn[i] <= millis()/1000 - paramLastOn[i] && millis()/1000 - paramLastOn[i] < paramOn[i] + paramOff[i]) {
+            if (relayCurrentStatus[i] == false) {
+              digitalWrite(i, HIGH);
+              relayCurrentStatus[i] = true;
+              saveMeasure(i, false);
+            }
+          }
+          if (millis()/1000 - paramLastOn[i] >= paramOn[i] + paramOff[i]) {
+            if (relayCurrentStatus[i] == true) {
+              paramLastOn[i] = millis()/1000;
+              //Serial.println("RE STARTED");
+              digitalWrite(i, LOW);
+              relayCurrentStatus[i] = false;
+              saveMeasure(i, true);
+              
+            }
+          }
+
+          /* IF last on missed force next */
+          if (millis()/1000 - paramLastOn[i] >= 2* (paramOn[i] + paramOff[i])) {
+              paramLastOn[i] = millis()/1000;
+              digitalWrite(i, LOW);
+              relayCurrentStatus[i] = false;
+              saveMeasure(i, true);
+          }
+                                 
+      }
+  
+      /*  RELAY not started (startIn) */
+      if ( paramStartIn[i] != 0 ) {
+        if (paramStartIn[i] - ( millis()/1000 - paramStartedAt[i] ) <= 0) {
+          paramStartIn[i] = 0;
+          // DO THE thing
+          digitalWrite(i, LOW);
+          relayCurrentStatus[i] = false;
+          saveMeasure(i, true);
+          paramLastOn[i] = millis()/1000;
+        } else {
+           //paramStartIn[i] = paramStartIn[i] - ( millis() - paramStartedAt[i] );
+        }
+        
+      }
+    }
+  }
+    
+}
